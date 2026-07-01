@@ -5,51 +5,186 @@ import { toast } from "sonner";
 import { AppLayout } from "@/components/app-layout";
 import { RecommendationCard } from "@/components/recommendation-card";
 import { NoMatchState } from "@/components/no-match-state";
-import type { Recommendation, RecommendResponse } from "@/lib/rec-types";
+import type { Recommendation } from "@/lib/rec-types";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "Advisor — Amicorp AI Structuring Assistant" },
-      { name: "description", content: "Describe your structuring goal and get AI-ranked entity and jurisdiction recommendations." },
+      { name: "description", content: "Describe your structuring goal and get real-time AI advisory reports and ranked entity cards." },
     ],
   }),
   component: DashboardPage,
 });
 
+interface ContextMatch {
+  id: string;
+  score: number;
+  metadata?: {
+    text?: string;
+    type?: string;
+    entity?: string;
+    country?: string;
+    entityCategory?: string;
+    serviceType?: string;
+    keyFeature1?: string;
+    keyFeature2?: string;
+    setupFee?: string;
+    annualFeeTotal?: string;
+    description?: string;
+    setupTime?: string;
+    benefit1?: string;
+    benefit2?: string;
+    benefit3?: string;
+    legalFramework?: string;
+    liabilityProtection?: string;
+    publicRegister?: string;
+    corporateDirectorFee?: string;
+    registeredOfficeFee?: string;
+    corporateSecretaryFee?: string;
+    governmentFee?: string;
+    hourlyRates?: string;
+    idealFor1?: string;
+    idealFor2?: string;
+  };
+}
+
+function formatMarkdown(text: string) {
+  if (!text) return "";
+  const parts = text.split("**");
+  return parts.map((part, i) => {
+    if (i % 2 === 1) {
+      return <strong key={i} className="font-bold text-navy-950">{part}</strong>;
+    }
+    return part;
+  });
+}
+
+function mapContextToRecommendations(context: ContextMatch[]): Recommendation[] {
+  if (!context || !Array.isArray(context)) return [];
+
+  const seen = new Set<string>();
+  const filtered: { m: ContextMatch; scaledScore: number }[] = [];
+
+  for (const m of context) {
+    const score = m.score || 0;
+    const metadata = m.metadata || {};
+    const entityName = metadata.entity;
+    const type = metadata.type;
+
+    // Normalize Pinecone/Cohere cosine similarity score [0.40, 0.50] to human-friendly percentage [70, 95]
+    let scaledScore = 0;
+    if (score >= 0.50) {
+      scaledScore = 95 + Math.min(5, Math.round((score - 0.50) * 100));
+    } else if (score >= 0.40) {
+      scaledScore = 70 + Math.round((score - 0.40) * 250);
+    } else {
+      scaledScore = Math.round(score * 175);
+    }
+
+    if (type === "entity" && entityName && scaledScore >= 80) {
+      if (!seen.has(entityName)) {
+        seen.add(entityName);
+        filtered.push({ m, scaledScore });
+        if (filtered.length === 6) {
+          break;
+        }
+      }
+    }
+  }
+
+  return filtered.map(({ m, scaledScore }, idx) => {
+    const md = m.metadata || {};
+    const score = m.score || 0;
+
+    const categories = [
+      md.entityCategory,
+      md.serviceType,
+      md.keyFeature1,
+      md.keyFeature2,
+    ].filter(Boolean).filter((v) => v !== "—").slice(0, 3);
+
+    const idealFor = [md.idealFor1, md.idealFor2].filter(Boolean);
+
+    return {
+      id: idx + 1,
+      score: scaledScore,
+      jurisdiction: md.country || "Unknown",
+      entityName: md.entity || "Unnamed Entity",
+      categories,
+      idealFor,
+      setupCost: md.setupFee || "Contact Amicorp",
+      annualCost: md.annualFeeTotal || "Contact Amicorp",
+      desc: md.description || "",
+      setupTime: md.setupTime || "",
+      benefit1: md.benefit1 || "",
+      benefit2: md.benefit2 || "",
+      benefit3: md.benefit3 || "",
+      legalFramework: md.legalFramework || "",
+      liabilityProtection: md.liabilityProtection || "",
+      publicRegister: md.publicRegister || "",
+      fees: {
+        setupFee: md.setupFee || "—",
+        corporateDirectorFee: md.corporateDirectorFee || "—",
+        registeredOfficeFee: md.registeredOfficeFee || "—",
+        corporateSecretaryFee: md.corporateSecretaryFee || "—",
+        governmentFee: md.governmentFee || "—",
+        annualFeeTotal: md.annualFeeTotal || "—",
+        hourlyRates: md.hourlyRates || "—",
+      },
+    };
+  });
+}
+
 function DashboardPage() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<Recommendation[] | null>(null);
-  const [noMatch, setNoMatch] = useState(false);
+  const [advice, setAdvice] = useState<string | null>(null);
+  const [recommendations, setRecommendations] = useState<Recommendation[] | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState("");
 
   const analyze = async () => {
     if (!query.trim() || loading) return;
     setLoading(true);
+    setAdvice(null);
+    setRecommendations(null);
     setLastQuery(query);
-    setResults(null);
-    setNoMatch(false);
     try {
-      const res = await fetch("/api/recommend", {
+      const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: query.trim() }),
+        body: JSON.stringify({ message: query.trim(), conversation_id: conversationId, stream: false }),
       });
-      if (!res.ok) throw new Error(`Analysis failed (${res.status})`);
-      const data = (await res.json()) as RecommendResponse;
       
-      setResults(data.results ?? []);
-      setNoMatch(!!data.noMatch || (data.results ?? []).length === 0);
-      if (data.noMatch || (data.results ?? []).length === 0) {
-        toast("No direct automatic match", { description: "We have forwarded your enquiry to our advisory team." });
-      } else {
-        toast.success("Recommendations generated", { description: `Found ${data.results?.length} optimal structure matches.` });
+      if (!res.ok) {
+        let errMsg = `Search failed (${res.status})`;
+        try {
+          const errData = await res.json();
+          if (errData.error) errMsg = errData.error;
+        } catch {
+          // ignore
+        }
+        throw new Error(errMsg);
+      }
+      
+      const data = await res.json();
+      
+      const mapped = mapContextToRecommendations(data.context || []);
+      setRecommendations(mapped);
+      setAdvice(null); // No LLM advice report on the main search page
+      
+      if (data.conversation_id && !conversationId) {
+        setConversationId(data.conversation_id);
+      }
+      
+      if (mapped.length === 0) {
+        toast("No direct entity match found", { description: "An advisor will follow up with you." });
       }
     } catch (err) {
-      toast.error("Analysis failed", { description: (err as Error).message });
-      setResults([]);
-      setNoMatch(true);
+      toast.error("Search failed", { description: (err as Error).message });
+      setRecommendations([]);
+      setAdvice(null);
     } finally {
       setLoading(false);
     }
@@ -57,9 +192,9 @@ function DashboardPage() {
 
   const reset = () => {
     setQuery("");
-    setResults(null);
-    setNoMatch(false);
-    setLastQuery("");
+    setAdvice(null);
+    setRecommendations(null);
+    setConversationId(null);
     toast("Analysis cleared");
   };
 
@@ -77,7 +212,7 @@ function DashboardPage() {
                   {["Global", "Caribbean", "Asia Pacific", "EMEA"].map((r, i) => (
                     <span
                       key={r}
-                      className={`cursor-pointer rounded-full px-3 py-1 text-xs transition-colors ${
+                      className={`rounded-full px-3 py-1 text-xs transition-colors ${
                         i === 0
                           ? "bg-navy-900 text-white"
                           : "border border-navy-950/10 text-zinc-600 hover:bg-white"
@@ -131,7 +266,7 @@ function DashboardPage() {
                   className="w-full resize-none rounded-md border-none bg-white p-6 text-lg text-navy-950 shadow-sm ring-1 ring-navy-950/5 transition-shadow placeholder:text-zinc-400 focus:outline-none focus:ring-amber-600/30 disabled:opacity-75"
                 />
                 <div className="absolute bottom-4 right-4 flex gap-2">
-                  {results !== null && (
+                  {(advice !== null || recommendations !== null) && (
                     <button
                       onClick={reset}
                       className="inline-flex items-center gap-1.5 rounded border border-navy-950/10 bg-white py-2 px-3 text-sm font-medium text-navy-950 transition-all hover:bg-zinc-50 active:scale-[0.98]"
@@ -159,24 +294,38 @@ function DashboardPage() {
               </div>
             )}
 
-            {results !== null && !loading && (
-              <section className="space-y-6">
+            {advice !== null && !loading && (
+              <section className="space-y-6 animate-fade-in">
+                <div className="flex items-end justify-between border-b border-navy-950/5 pb-4">
+                  <h2 className="font-serif text-2xl font-medium text-navy-950">AI Structuring Report</h2>
+                </div>
+
+                <div className="rounded-lg border border-navy-950/5 bg-white p-6 md:p-8 shadow-sm">
+                  <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-700 font-sans">
+                    {formatMarkdown(advice)}
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {recommendations !== null && !loading && (
+              <section className="space-y-6 animate-fade-in">
                 <div className="flex items-end justify-between border-b border-navy-950/5 pb-4">
                   <h2 className="font-serif text-2xl font-medium text-navy-950">
-                    {noMatch ? "No automatic match" : "Recommended Structures"}
+                    {recommendations.length === 0 ? "No automatic structures match" : "Recommended Structures"}
                   </h2>
-                  {!noMatch && (
+                  {recommendations.length > 0 && (
                     <span className="text-[10px] font-medium uppercase tracking-widest text-zinc-500">
-                      {results.length} Optimal Match{results.length === 1 ? "" : "es"}
+                      {recommendations.length} Optimal Match{recommendations.length === 1 ? "" : "es"}
                     </span>
                   )}
                 </div>
 
-                {noMatch ? (
+                {recommendations.length === 0 ? (
                   <NoMatchState query={lastQuery} />
                 ) : (
-                  <div className="grid gap-6">
-                    {results.map((r, i) => (
+                  <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+                    {recommendations.map((r, i) => (
                       <RecommendationCard key={r.id ?? i} rec={r} index={i} />
                     ))}
                   </div>
@@ -184,10 +333,10 @@ function DashboardPage() {
               </section>
             )}
 
-            {results === null && !loading && (
+            {advice === null && recommendations === null && !loading && (
               <div className="rounded-lg border border-dashed border-navy-950/10 bg-white/50 p-10 text-center">
                 <p className="font-serif text-lg text-navy-950">Ready when you are.</p>
-                <p className="mt-1 text-sm text-zinc-500">Enter your objective above to see ranked recommendations.</p>
+                <p className="mt-1 text-sm text-zinc-500">Enter your objective above to see structured advice and matching entities.</p>
               </div>
             )}
           </div>
