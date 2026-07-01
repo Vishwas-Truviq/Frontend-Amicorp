@@ -3,115 +3,53 @@ import { useState } from "react";
 import { Sparkles, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { AppLayout } from "@/components/app-layout";
+import { RecommendationCard } from "@/components/recommendation-card";
+import { NoMatchState } from "@/components/no-match-state";
+import type { Recommendation, RecommendResponse } from "@/lib/rec-types";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "Advisor — Amicorp AI Structuring Assistant" },
-      { name: "description", content: "Describe your structuring goal and get real-time AI advisory reports from our database." },
+      { name: "description", content: "Describe your structuring goal and get AI-ranked entity and jurisdiction recommendations." },
     ],
   }),
   component: DashboardPage,
 });
 
-function formatMarkdown(text: string) {
-  if (!text) return "";
-  const parts = text.split("**");
-  return parts.map((part, i) => {
-    if (i % 2 === 1) {
-      return <strong key={i} className="font-bold text-navy-950">{part}</strong>;
-    }
-    return part;
-  });
-}
-
-function parseChunkContent(dataStr: string): { delta?: string; conversation_id?: string } {
-  try {
-    const chunk = JSON.parse(dataStr);
-    return {
-      delta: chunk.choices?.[0]?.delta?.content,
-      conversation_id: chunk.conversation_id,
-    };
-  } catch (err) {
-    let delta: string | undefined = undefined;
-    let conversation_id: string | undefined = undefined;
-
-    try {
-      const normalizedStr = dataStr.replace(/'/g, '"');
-      const chunk = JSON.parse(normalizedStr);
-      delta = chunk.choices?.[0]?.delta?.content;
-      conversation_id = chunk.conversation_id;
-      if (delta || conversation_id) {
-        return { delta, conversation_id };
-      }
-    } catch {
-      // ignore
-    }
-
-    const contentMatch = dataStr.match(/"content":\s*'([\s\S]*?)'\s*\}\s*\]\s*\}/);
-    if (contentMatch) {
-      const rawContent = contentMatch[1];
-      delta = rawContent
-        .replace(/\\'/g, "'")
-        .replace(/\\"/g, '"')
-        .replace(/\\n/g, "\n")
-        .replace(/\\r/g, "\r")
-        .replace(/\\t/g, "\t")
-        .replace(/\\\\/g, "\\");
-    }
-
-    return { delta, conversation_id };
-  }
-}
-
 function DashboardPage() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
-  const [advice, setAdvice] = useState<string | null>(null);
-  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [results, setResults] = useState<Recommendation[] | null>(null);
+  const [noMatch, setNoMatch] = useState(false);
+  const [lastQuery, setLastQuery] = useState("");
 
   const analyze = async () => {
     if (!query.trim() || loading) return;
     setLoading(true);
-    setAdvice("");
+    setLastQuery(query);
+    setResults(null);
+    setNoMatch(false);
     try {
-      const res = await fetch("/api/chat", {
+      const res = await fetch("/api/recommend", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: query.trim(), conversation_id: conversationId, stream: true }),
+        body: JSON.stringify({ query: query.trim() }),
       });
+      if (!res.ok) throw new Error(`Analysis failed (${res.status})`);
+      const data = (await res.json()) as RecommendResponse;
       
-      if (!res.ok || !res.body) throw new Error(`Analysis failed (${res.status})`);
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const rawLine of lines) {
-          const line = rawLine.trim();
-          if (!line.startsWith("data:")) continue;
-          const data = line.slice(5).trim();
-          if (data === "[DONE]") continue;
-
-          const parsed = parseChunkContent(data);
-          if (parsed.conversation_id && !conversationId) {
-            setConversationId(parsed.conversation_id);
-          }
-          if (parsed.delta) {
-            setAdvice((prev) => (prev ?? "") + parsed.delta);
-          }
-        }
+      setResults(data.results ?? []);
+      setNoMatch(!!data.noMatch || (data.results ?? []).length === 0);
+      if (data.noMatch || (data.results ?? []).length === 0) {
+        toast("No direct automatic match", { description: "We have forwarded your enquiry to our advisory team." });
+      } else {
+        toast.success("Recommendations generated", { description: `Found ${data.results?.length} optimal structure matches.` });
       }
     } catch (err) {
       toast.error("Analysis failed", { description: (err as Error).message });
-      setAdvice((prev) => (prev ? prev : "Sorry — I couldn't reach the advisory service. Please check your connection and try again."));
+      setResults([]);
+      setNoMatch(true);
     } finally {
       setLoading(false);
     }
@@ -119,8 +57,9 @@ function DashboardPage() {
 
   const reset = () => {
     setQuery("");
-    setAdvice(null);
-    setConversationId(null);
+    setResults(null);
+    setNoMatch(false);
+    setLastQuery("");
     toast("Analysis cleared");
   };
 
@@ -138,7 +77,7 @@ function DashboardPage() {
                   {["Global", "Caribbean", "Asia Pacific", "EMEA"].map((r, i) => (
                     <span
                       key={r}
-                      className={`rounded-full px-3 py-1 text-xs transition-colors ${
+                      className={`cursor-pointer rounded-full px-3 py-1 text-xs transition-colors ${
                         i === 0
                           ? "bg-navy-900 text-white"
                           : "border border-navy-950/10 text-zinc-600 hover:bg-white"
@@ -153,7 +92,7 @@ function DashboardPage() {
                 <label className="mb-2 block text-[10px] font-bold uppercase tracking-widest text-zinc-500">Intent</label>
                 <div className="flex flex-wrap gap-2">
                   {["Wealth", "Funds", "Holding", "Trading"].map((r) => (
-                    <span key={r} className="rounded-full border border-navy-950/10 px-3 py-1 text-xs text-zinc-600 hover:bg-white">
+                    <span key={r} className="cursor-pointer rounded-full border border-navy-950/10 px-3 py-1 text-xs text-zinc-600 hover:bg-white">
                       {r}
                     </span>
                   ))}
@@ -192,7 +131,7 @@ function DashboardPage() {
                   className="w-full resize-none rounded-md border-none bg-white p-6 text-lg text-navy-950 shadow-sm ring-1 ring-navy-950/5 transition-shadow placeholder:text-zinc-400 focus:outline-none focus:ring-amber-600/30 disabled:opacity-75"
                 />
                 <div className="absolute bottom-4 right-4 flex gap-2">
-                  {advice !== null && (
+                  {results !== null && (
                     <button
                       onClick={reset}
                       className="inline-flex items-center gap-1.5 rounded border border-navy-950/10 bg-white py-2 px-3 text-sm font-medium text-navy-950 transition-all hover:bg-zinc-50 active:scale-[0.98]"
@@ -213,37 +152,42 @@ function DashboardPage() {
               </div>
             </section>
 
-            {loading && !advice && (
+            {loading && (
               <div className="flex items-center gap-3 text-sm text-zinc-500">
                 <Loader2 className="size-4 animate-spin text-amber-600" />
                 <span className="shimmer-text font-medium">Analyzing your objective across 40+ jurisdictions…</span>
               </div>
             )}
 
-            {advice !== null && (
+            {results !== null && !loading && (
               <section className="space-y-6">
                 <div className="flex items-end justify-between border-b border-navy-950/5 pb-4">
-                  <h2 className="font-serif text-2xl font-medium text-navy-950">AI Structuring Report</h2>
-                  {loading && (
-                    <div className="flex items-center gap-2 text-xs text-zinc-400 font-medium">
-                      <Loader2 className="size-3 animate-spin text-amber-600" />
-                      Streaming Response...
-                    </div>
+                  <h2 className="font-serif text-2xl font-medium text-navy-950">
+                    {noMatch ? "No automatic match" : "Recommended Structures"}
+                  </h2>
+                  {!noMatch && (
+                    <span className="text-[10px] font-medium uppercase tracking-widest text-zinc-500">
+                      {results.length} Optimal Match{results.length === 1 ? "" : "es"}
+                    </span>
                   )}
                 </div>
 
-                <div className="rounded-lg border border-navy-950/5 bg-white p-6 md:p-8 shadow-sm">
-                  <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-700 font-sans">
-                    {advice ? formatMarkdown(advice) : (loading ? "Generating report..." : "")}
+                {noMatch ? (
+                  <NoMatchState query={lastQuery} />
+                ) : (
+                  <div className="grid gap-6">
+                    {results.map((r, i) => (
+                      <RecommendationCard key={r.id ?? i} rec={r} index={i} />
+                    ))}
                   </div>
-                </div>
+                )}
               </section>
             )}
 
-            {advice === null && !loading && (
+            {results === null && !loading && (
               <div className="rounded-lg border border-dashed border-navy-950/10 bg-white/50 p-10 text-center">
                 <p className="font-serif text-lg text-navy-950">Ready when you are.</p>
-                <p className="mt-1 text-sm text-zinc-500">Enter your objective above to see structured advice from our RAG engine.</p>
+                <p className="mt-1 text-sm text-zinc-500">Enter your objective above to see ranked recommendations.</p>
               </div>
             )}
           </div>
