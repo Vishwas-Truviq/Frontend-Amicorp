@@ -16,9 +16,7 @@ export const Route = createFileRoute("/api/recommend")({
 
           const cohereKey = process.env.COHERE_API_KEY;
           const pineconeKey = process.env.PINECONE_API_KEY;
-          const pineconeHost = (process.env.PINECONE_HOST || "amicorp-kb-dev-cvn4o5i.svc.aped-4627-b74a.pinecone.io")
-            .replace("https://", "")
-            .replace("http://", "");
+          const pineconeHost = "amicorp-kb-ot25xdb.svc.aped-4627-b74a.pinecone.io";
 
           if (!cohereKey || !pineconeKey) {
             console.error("Missing API Keys on Frontend Server:", { hasCohere: !!cohereKey, hasPinecone: !!pineconeKey });
@@ -81,22 +79,11 @@ export const Route = createFileRoute("/api/recommend")({
             const metadata = m.metadata || {};
             const entityName = metadata.entity;
 
-            // Normalize Pinecone/Cohere cosine similarity score [0.40, 0.50] to human-friendly percentage [70, 95]
-            let scaledScore = 0;
-            if (score >= 0.50) {
-              scaledScore = 95 + Math.min(5, Math.round((score - 0.50) * 100));
-            } else if (score >= 0.40) {
-              scaledScore = 70 + Math.round((score - 0.40) * 250);
-            } else {
-              scaledScore = Math.round(score * 175);
-            }
-
-            if (metadata.type === "entity" && entityName && scaledScore >= 80) {
+            if (metadata.type === "entity" && entityName && score > 0.45) {
               if (!seen.has(entityName)) {
                 seen.add(entityName);
-                (m as any).scaledScore = scaledScore;
                 filteredMatches.push(m);
-                if (filteredMatches.length === 6) {
+                if (filteredMatches.length === 3) {
                   break;
                 }
               }
@@ -134,7 +121,7 @@ export const Route = createFileRoute("/api/recommend")({
 
             return {
               id: idx + 1,
-              score: (m as any).scaledScore || Math.round(score * 100),
+              score: Math.round(score * 100),
               jurisdiction: md.country || "Unknown",
               entityName: md.entity || "Unnamed Entity",
               categories,

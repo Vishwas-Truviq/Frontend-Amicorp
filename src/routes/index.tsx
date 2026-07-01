@@ -64,7 +64,7 @@ function mapContextToRecommendations(context: ContextMatch[]): Recommendation[] 
   if (!context || !Array.isArray(context)) return [];
 
   const seen = new Set<string>();
-  const filtered: { m: ContextMatch; scaledScore: number }[] = [];
+  const filtered = [];
 
   for (const m of context) {
     const score = m.score || 0;
@@ -72,28 +72,15 @@ function mapContextToRecommendations(context: ContextMatch[]): Recommendation[] 
     const entityName = metadata.entity;
     const type = metadata.type;
 
-    // Normalize Pinecone/Cohere cosine similarity score [0.40, 0.50] to human-friendly percentage [70, 95]
-    let scaledScore = 0;
-    if (score >= 0.50) {
-      scaledScore = 95 + Math.min(5, Math.round((score - 0.50) * 100));
-    } else if (score >= 0.40) {
-      scaledScore = 70 + Math.round((score - 0.40) * 250);
-    } else {
-      scaledScore = Math.round(score * 175);
-    }
-
-    if (type === "entity" && entityName && scaledScore >= 80) {
+    if (type === "entity" && entityName) {
       if (!seen.has(entityName)) {
         seen.add(entityName);
-        filtered.push({ m, scaledScore });
-        if (filtered.length === 6) {
-          break;
-        }
+        filtered.push(m);
       }
     }
   }
 
-  return filtered.map(({ m, scaledScore }, idx) => {
+  return filtered.map((m, idx) => {
     const md = m.metadata || {};
     const score = m.score || 0;
 
@@ -108,7 +95,7 @@ function mapContextToRecommendations(context: ContextMatch[]): Recommendation[] 
 
     return {
       id: idx + 1,
-      score: scaledScore,
+      score: Math.round(score * 100),
       jurisdiction: md.country || "Unknown",
       entityName: md.entity || "Unnamed Entity",
       categories,
@@ -158,7 +145,7 @@ function DashboardPage() {
       });
       
       if (!res.ok) {
-        let errMsg = `Search failed (${res.status})`;
+        let errMsg = `Analysis failed (${res.status})`;
         try {
           const errData = await res.json();
           if (errData.error) errMsg = errData.error;
@@ -170,21 +157,21 @@ function DashboardPage() {
       
       const data = await res.json();
       
-      const mapped = mapContextToRecommendations(data.context || []);
-      setRecommendations(mapped);
-      setAdvice(null); // No LLM advice report on the main search page
-      
+      setAdvice(data.response || "No response returned from advisory engine.");
       if (data.conversation_id && !conversationId) {
         setConversationId(data.conversation_id);
       }
+      
+      const mapped = mapContextToRecommendations(data.context || []);
+      setRecommendations(mapped);
       
       if (mapped.length === 0) {
         toast("No direct entity match found", { description: "An advisor will follow up with you." });
       }
     } catch (err) {
-      toast.error("Search failed", { description: (err as Error).message });
+      toast.error("Analysis failed", { description: (err as Error).message });
+      setAdvice("Sorry — I couldn't reach the advisory service. Please check your connection and try again.");
       setRecommendations([]);
-      setAdvice(null);
     } finally {
       setLoading(false);
     }
@@ -324,7 +311,7 @@ function DashboardPage() {
                 {recommendations.length === 0 ? (
                   <NoMatchState query={lastQuery} />
                 ) : (
-                  <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+                  <div className="grid gap-6">
                     {recommendations.map((r, i) => (
                       <RecommendationCard key={r.id ?? i} rec={r} index={i} />
                     ))}
