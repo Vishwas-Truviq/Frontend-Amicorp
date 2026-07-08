@@ -54,7 +54,28 @@ function formatMarkdown(text: string) {
   const parts = text.split("**");
   return parts.map((part, i) => {
     if (i % 2 === 1) {
+      if (part.includes("http://") || part.includes("https://")) {
+        return (
+          <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="font-bold text-amber-600 hover:underline">
+            {part}
+          </a>
+        );
+      }
       return <strong key={i} className="font-bold text-navy-950">{part}</strong>;
+    }
+    if (part.includes("http://") || part.includes("https://")) {
+      const urlRegex = /(https?:\/\/[^\s\)]+)/g;
+      const subParts = part.split(urlRegex);
+      return subParts.map((subPart, j) => {
+        if (subPart.match(urlRegex)) {
+          return (
+            <a key={`${i}-${j}`} href={subPart} target="_blank" rel="noopener noreferrer" className="text-amber-600 hover:underline">
+              {subPart}
+            </a>
+          );
+        }
+        return subPart;
+      });
     }
     return part;
   });

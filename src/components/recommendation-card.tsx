@@ -31,12 +31,9 @@ export function RecommendationCard({ rec, index = 0 }: { rec: Recommendation; in
           {rec.desc && <p className="max-w-[60ch] text-pretty text-sm text-zinc-500">{rec.desc}</p>}
         </div>
         <div className="text-right">
-          <div className="flex items-baseline gap-1">
-            <span className="font-serif text-4xl font-medium text-amber-600">{rec.score}</span>
-            <span className="text-lg text-amber-600">%</span>
-          </div>
+          
           <div className="flex items-center justify-end gap-1 text-[10px] font-bold uppercase tracking-tighter text-zinc-400">
-            <TrendingUp className="size-3" /> Match
+            <TrendingUp className="size-3" /> Good Match
           </div>
         </div>
       </div>
